@@ -1,0 +1,51 @@
+function parseJwt(token) {
+  const base64Url = token.split('.')[1];
+  const base64 = base64Url.replace(/-/g, '+').replace(/_/g, '/');
+  const jsonPayload = decodeURIComponent(
+    atob(base64)
+      .split('')
+      .map(c => {
+        return '%' + ('00' + c.charCodeAt(0).toString(16)).slice(-2);
+      })
+      .join(''),
+  );
+
+  return JSON.parse(jsonPayload);
+}
+
+const LOLKEK = 'setJwtUserData2';
+
+export default {
+  'namespaced': true,
+  state: {
+    jwtUserData: null,
+  },
+  mutations: {
+    setJwtUserData(state, payload) {
+      state.jwtUserData = payload;
+    },
+    [LOLKEK](state, payload) {
+      state.jwtUserData = payload;
+    },
+  },
+  actions: {
+    loadUserData({ commit }, payload) {
+      if (!payload) {
+        throw 'Нет данных авторизации в cookie';
+      }
+
+      const cookieParts = payload.split('|');
+      if (cookieParts.length !== 3) {
+        throw 'Cookie не содержат 3 части, разделенных |';
+      }
+
+      const sessionParts = atob(cookieParts[0]).split('|');
+      if (sessionParts.length !== 5) {
+        throw 'Сессия не содержит 5 частей, разделенных |';
+      }
+
+      const jsonWebToken = atob(sessionParts[4]);
+      commit('setJwtUserData', parseJwt(jsonWebToken));
+    },
+  },
+};
