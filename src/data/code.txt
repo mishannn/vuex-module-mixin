@@ -1,51 +1,487 @@
-function parseJwt(token) {
-  const base64Url = token.split('.')[1];
-  const base64 = base64Url.replace(/-/g, '+').replace(/_/g, '/');
-  const jsonPayload = decodeURIComponent(
-    atob(base64)
-      .split('')
-      .map(c => {
-        return '%' + ('00' + c.charCodeAt(0).toString(16)).slice(-2);
-      })
-      .join(''),
-  );
+import Vue from 'vue';
 
-  return JSON.parse(jsonPayload);
-}
+import convert from 'xml-js';
 
-const LOLKEK = 'setJwtUserData2';
+import config from '../config';
+import axios from 'axios';
+
+import convertToMenu from '@/utils/convertToMenu';
+import convertLegend from '@/utils/convertLegend';
 
 export default {
-  'namespaced': true,
+  namespaced: true,
   state: {
-    jwtUserData: null,
+    layers: null,
+    layersLoading: false,
+    // clickableLayerName: null,
+    showPolygonData: false,
+    webGeocodingActive: false,
+    webGeocodingMarkerActive: false,
+    webGeocodingData: false,
+    webGeocodingLatLng: null,
   },
-  mutations: {
-    setJwtUserData(state, payload) {
-      state.jwtUserData = payload;
+  getters: {
+    activeLayers(state) {
+      if (!state.layers) {
+        return [];
+      }
+
+      const checkChildren = (item, arr) => {
+        for (const child of [...item.children].sort((a, b) => a.order - b.order)) {
+          if (child.active && !child.children.length) {
+            arr.push(child);
+          }
+          checkChildren(child, arr);
+        }
+      };
+
+      return [...state.layers]
+        .sort((a, b) => a.order - b.order)
+        .reduce((arr, item) => {
+          if (item.active && !item.children.length) {
+            arr.push(item);
+          }
+
+          checkChildren(item, arr);
+          return arr;
+        }, []);
     },
-    [LOLKEK](state, payload) {
-      state.jwtUserData = payload;
+    activeLayersNames(state, getters) {
+      return getters.activeLayers.map(item => item.name._text);
+    },
+    getCoverColor(state, getters) {
+      return coverTech => {
+        let layerName = null;
+        switch (coverTech) {
+          case '2G':
+            layerName = 'workspace-egis:coverage_2g';
+            break;
+
+          case '3G':
+            layerName = 'workspace-egis:coverage_3g';
+            break;
+
+          case '4G':
+            layerName = 'workspace-egis:coverage_4g';
+            break;
+
+          case 'ni_ns':
+            layerName = 'workspace-egis:coverage_ni_ns';
+            break;
+        }
+
+        if (!layerName) {
+          return '#999';
+        }
+
+        const layer = getters.getLayerByName(layerName);
+        if (!layer) {
+          return '#999';
+        }
+
+        return layer.legend.color;
+      };
+    },
+    getLayerByName(state) {
+      return (name, ignoreWorkspace) => {
+        let result = null;
+        const findChildrenByName = layer => {
+          if (!layer || !layer.children) return;
+
+          for (const child of layer.children) {
+            const layerNameParts = child.name._text.split(':');
+            const layerName = !ignoreWorkspace ? child.name._text : layerNameParts[layerNameParts.length - 1];
+            if (layerName === name) {
+              result = child;
+              return;
+            }
+            findChildrenByName(child);
+          }
+        };
+        findChildrenByName({ children: state.layers });
+
+        return result;
+      };
+    },
+    getTitleByLayerName(state, getters) {
+      return name => {
+        const layer = getters.getLayerByName(name, true);
+        if (layer) {
+          return layer.title._text;
+        }
+        return '-';
+      };
     },
   },
   actions: {
-    loadUserData({ commit }, payload) {
-      if (!payload) {
-        throw 'Нет данных авторизации в cookie';
+    getCoordinateMenu(context, payload) {
+      // const name = payload.layerName;
+      // const { lat, lon } = payload;
+      // const url = `${config.geocoder}/geocoder/address?lat=${lat}&lon=${lon}&yandex=true`;
+      const menu = {
+        name: '',
+        data: [{}, {}],
+      };
+      return menu;
+      // return axios.get(url)
+      //   .then(res => res.data);
+    },
+    convertAddress(context, payload) {
+      if (payload && payload !== '') {
+        const url = `${config.geocoder}/geocoder/coordinates?address=${payload}&yandex=true`;
+        return axios.get(url).then(res => res.data);
       }
+      return false;
+    },
+    async convertCoords(context, payload) {
+      const { lat, lon } = payload;
+      const url = `${config.geocoder}/geocoder/address?lat=${lat}&lon=${lon}&yandex=true`;
+      const res = await axios.get(url);
+      return res.data;
+    },
+    async getLayer(context, payload) {
+      const { lon, lat, name } = payload;
+      const url = `${config.server}/geoserver/wfs?service=WFS&version=1.0.0&request=GetFeature&typeName=workspace-egis:${name}&viewparams=lon:${lon};lat:${lat}&outputFormat=json`;
+      // console.log(url);
+      const res = await axios.get(url);
+      return res.data;
+    },
+    async getLegend(context, layerName) {
+      const legendurl = `${config.server}/geoserver/ows?service=wms&version=1.3.0&request=GetLegendGraphic&layer=${layerName}&FORMAT=application/json`;
+      return axios
+        .get(legendurl)
+        .then(res => res.data)
+        .catch(e => e);
+    },
+    // async getLayersParams() {
+    //   const url = `${config.server}/geoserver/wfs`;
+    //   const params = {
+    //     service: 'WFS',
+    //     version: '2.0.0',
+    //     request: 'DescribeFeatureType',
+    //     outputFormat: 'application/json',
+    //   };
 
-      const cookieParts = payload.split('|');
-      if (cookieParts.length !== 3) {
-        throw 'Cookie не содержат 3 части, разделенных |';
-      }
+    //   try {
+    //     const response = await axios.get(url, { params });
+    //     const featureTypes = response.data.featureTypes;
+    //     const layersParams = featureTypes.reduce((acc, featureType) => {
+    //       acc[featureType.typeName] = featureType.properties.map(property => property.name);
+    //       return acc;
+    //     }, {});
 
-      const sessionParts = atob(cookieParts[0]).split('|');
-      if (sessionParts.length !== 5) {
-        throw 'Сессия не содержит 5 частей, разделенных |';
-      }
+    //     console.log(layersParams);
+    //     return null;
+    //   } catch (e) {
+    //     console.warn('Ошибка получения параметров слоев');
+    //     return null;
+    //   }
+    // },
+    async enrichmentLayersLegend({ dispatch }, layers) {
+      const promises = layers.map(layer => {
+        return new Promise(async resolve => {
+          if (layer.children.length > 0) {
+            layer.legend = false;
+            layer.children = await dispatch('enrichmentLayersLegend', layer.children);
+          } else {
+            const legend = await dispatch('getLegend', layer.name._text);
+            layer.legend = convertLegend(legend);
+          }
+          resolve(layer);
+        });
+      });
+      return Promise.all(promises);
+    },
+    collectAllLayers({ commit, dispatch }) {
+      return new Promise(async (resolve, reject) => {
+        try {
+          commit('setlayersLoading', true);
+          const url = `${config.server}/geoserver/wms`;
+          const params = {
+            service: 'WMS',
+            version: '2.0.0',
+            request: 'GetCapabilities',
+          };
+          // const getLayersParamsPromise = dispatch('getLayersParams');
+          // const getLayersPromise = axios.get(url);
 
-      const jsonWebToken = atob(sessionParts[4]);
-      commit('setJwtUserData', parseJwt(jsonWebToken));
+          // const [layersParams, layersXml] = await Promise.all([getLayersParamsPromise, getLayersPromise]);
+
+          const response = await axios.get(url, { params });
+          const parsed = JSON.parse(convert.xml2json(response.data, { compact: true, spaces: 4 }));
+          let layers = parsed.WMS_Capabilities.Capability.Layer.Layer;
+
+          // console.log(layers);
+
+          // if (Array.isArray(layers)) {
+          //   layers = layers[0].Layer;
+          // } else if (layers.Layer) {
+          //   layers = layers.Layer;
+          // }
+
+          const converted = convertToMenu(layers);
+
+          try {
+            const enrichmentByLegend = await dispatch('enrichmentLayersLegend', converted);
+
+            const userLayerItem = {
+              active: false,
+              order: 1000000000,
+              parent: null,
+              visible: true,
+              keywords: null,
+              name: { _text: 'userlayer' },
+              title: { _text: 'Пользовательский слой' },
+              children: [],
+              expanded: false,
+              legend: false,
+              existedActiveChildren: false,
+            };
+
+            commit('setLayers', [...enrichmentByLegend, userLayerItem]);
+            commit('setlayersLoading', false);
+            resolve();
+          } catch (e) {
+            console.warn('легенды слоев не получены', e);
+            reject();
+          }
+        } catch (e) {
+          console.warn('collectAllLayers, список слоев не получен', e);
+          commit('setlayersLoading', false);
+          reject();
+        }
+      });
+    },
+    async getDataFitPolygon(context, payload) {
+      const { queryparams, json } = payload;
+      // console.log(queryparams);
+      // const test = '55.742923631047681,37.58019668948996639,56.74595028057996871,37.58356814719681438';
+      const url = `${config.server}/rosreestr-api?extrainfo=true&${queryparams}`;
+      // const body = json;
+      // console.log(json);
+      const res = await axios.post(url, json);
+      return res.data;
+    },
+    toggleLayerExpanded({ commit, getters }, payload) {
+      const layer = getters.getLayerByName(payload);
+      // console.log(layersExpand);
+
+      commit('changeLayer', {
+        layer,
+        key: 'expanded',
+        value: !layer.expanded,
+      });
+    },
+    toggleLayerActive({ commit, getters }, payload) {
+      const layer = getters.getLayerByName(payload);
+
+      // if (!layer.children.length) {
+      //   commit('setClickableLayerName', layer.name._text);
+      // } else {
+      //   commit('setClickableLayerName', layer.children[0].name._text);
+      // }
+
+      commit('changeLayer', {
+        layer,
+        key: 'active',
+        value: !layer.active,
+      });
+
+      commit('changeLayer', {
+        layer,
+        key: 'existedActiveChildren',
+        value: false,
+      });
+
+      commit('changeLayer', {
+        layer,
+        key: 'visible',
+        value: true,
+      });
+
+      const changeChildren = (layerArg, value) => {
+        layerArg.children.forEach(child => {
+          if (child.active === value) return;
+
+          commit('changeLayer', {
+            layer: child,
+            key: 'active',
+            value,
+          });
+
+          commit('changeLayer', {
+            layer: child,
+            key: 'existedActiveChildren',
+            value: false,
+          });
+
+          commit('changeLayer', {
+            layer: child,
+            key: 'visible',
+            value: true,
+          });
+
+          changeChildren(child, value);
+        });
+      };
+
+      changeChildren(layer, layer.active);
+
+      const changeParent = layerArg => {
+        if (!layerArg.parent) return;
+
+        const parent = layerArg.parent;
+        const childrenLength = parent.children.length;
+        const activeChildrenLength = parent.children.filter(child => child.active).length;
+        const existedActiveChildrenLength = parent.children.filter(child => child.existedActiveChildren).length;
+
+        commit('changeLayer', {
+          layer: parent,
+          key: 'existedActiveChildren',
+          value: (activeChildrenLength || !!existedActiveChildrenLength) && childrenLength !== activeChildrenLength,
+        });
+
+        commit('changeLayer', {
+          layer: parent,
+          key: 'visible',
+          value: true,
+        });
+
+        if (!layerArg.active && parent.active) {
+          commit('changeLayer', {
+            layer: parent,
+            key: 'active',
+            value: false,
+          });
+        } else if (childrenLength === activeChildrenLength && !parent.active) {
+          commit('changeLayer', {
+            layer: parent,
+            key: 'active',
+            value: true,
+          });
+        }
+
+        changeParent(parent);
+      };
+      changeParent(layer);
+    },
+    toggleLayerVisible({ commit, getters }, payload) {
+      const layer = getters.getLayerByName(payload);
+
+      commit('changeLayer', {
+        layer,
+        key: 'visible',
+        value: !layer.visible,
+      });
+
+      const changeChildren = layerArg => {
+        const value = layerArg.visible;
+        layerArg.children.forEach(child => {
+          if (child.visible === value) return;
+
+          commit('changeLayer', {
+            layer: child,
+            key: 'visible',
+            value,
+          });
+
+          changeChildren(child, value);
+        });
+      };
+
+      changeChildren(layer);
+
+      const changeParent = layerArg => {
+        const value = layerArg.visible;
+
+        const parent = layerArg.parent;
+        if (!parent) return;
+
+        // const childrenLength = parent.children.length;
+        const visibleChildrenLength = parent.children.filter(child => child.visible).length;
+
+        if (value) {
+          commit('changeLayer', {
+            layer: parent,
+            key: 'visible',
+            value,
+          });
+        } else {
+          if (!visibleChildrenLength) {
+            commit('changeLayer', {
+              layer: parent,
+              key: 'visible',
+              value,
+            });
+          }
+        }
+
+        changeParent(parent);
+      };
+      changeParent(layer);
+    },
+    setActiveLayers({ dispatch }, payload) {
+      // console.log('mapData -> setActiveLayers', payload);
+      payload.forEach(layerName => {
+        dispatch('toggleLayerActive', layerName);
+      });
+    },
+    setLayerOrder({ commit, getters }, { layerName, order }) {
+      const layer = getters.getLayerByName(layerName);
+
+      commit('changeLayer', {
+        layer,
+        key: 'order',
+        value: order,
+      });
+    },
+  },
+  mutations: {
+    setLayers(state, payload) {
+      state.layers = payload;
+    },
+    changeLayer(state, { layer, key, value }) {
+      Vue.set(layer, key, value);
+    },
+    expandActiveLayers(state) {
+      const findActiveOrExpanded = layer => {
+        let expanded = false;
+
+        for (const child of layer.children) {
+          findActiveOrExpanded(child);
+          if (child.active || child.expanded) {
+            expanded = true;
+          }
+        }
+
+        Vue.set(layer, 'expanded', expanded);
+      };
+      findActiveOrExpanded({
+        children: state.layers,
+        expanded: false,
+        name: 'root',
+      });
+    },
+    setShowFitPolygons(state, payload) {
+      state.showPolygonData = payload;
+    },
+    // setClickableLayerName(state, payload) {
+    //   state.clickableLayerName = payload;
+    // },
+    setWebGeocodingMarkerActive(state, payload) {
+      state.webGeocodingMarkerActive = payload;
+    },
+    setWebGeocodingActive(state, payload) {
+      state.webGeocodingActive = payload;
+    },
+    setWebGeocodingData(state, payload) {
+      state.webGeocodingData = payload;
+    },
+    setWebGeocodingLatLng(state, payload) {
+      state.webGeocodingLatLng = payload;
+    },
+    setlayersLoading(state, payload) {
+      state.layersLoading = payload;
     },
   },
 };
